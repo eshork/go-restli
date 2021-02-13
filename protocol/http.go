@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -10,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/PapaCharlie/go-restli/protocol/restlicodec"
+
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -19,6 +22,9 @@ const (
 	RestLiHeader_Method          = "X-RestLi-Method"
 	RestLiHeader_ProtocolVersion = "X-RestLi-Protocol-Version"
 	RestLiHeader_ErrorResponse   = "X-RestLi-Error-Response"
+
+	MimeTypeApplicationProtobuf = "application/protobuf" // could also be "application/x-protobuf"
+	MimeTypeApplicationJSON     = "application/json"
 )
 
 type RestLiMethod int
@@ -87,11 +93,19 @@ func (c *RestLiClient) FormatQueryUrl(resourceBasename, rawQuery string) (*url.U
 }
 
 func SetJsonAcceptHeader(req *http.Request) {
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", MimeTypeApplicationJSON)
 }
 
 func SetJsonContentTypeHeader(req *http.Request) {
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", MimeTypeApplicationJSON)
+}
+
+func SetProtobufAcceptHeader(req *http.Request) {
+	req.Header.Set("Accept", MimeTypeApplicationProtobuf)
+}
+
+func SetProtobufContentTypeHeader(req *http.Request) {
+	req.Header.Set("Content-Type", MimeTypeApplicationProtobuf)
 }
 
 func SetRestLiHeaders(req *http.Request, method RestLiMethod) {
@@ -150,7 +164,7 @@ func JsonRequest(
 	return req, nil
 }
 
-// JsonRequest creates an http.Request with the given HTTP method and rest.li method, and populates the body of the
+// RawJsonRequest creates an http.Request with the given HTTP method and rest.li method, and populates the body of the
 // request with the given reader
 func RawJsonRequest(ctx context.Context, url *url.URL, httpMethod string, restLiMethod RestLiMethod, contents io.Reader) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, httpMethod, url.String(), contents)
@@ -161,6 +175,44 @@ func RawJsonRequest(ctx context.Context, url *url.URL, httpMethod string, restLi
 	SetRestLiHeaders(req, restLiMethod)
 	SetJsonAcceptHeader(req)
 	SetJsonContentTypeHeader(req)
+
+	return req, nil
+}
+
+// ProtobufRequest creates an http.Request with the given HTTP method and rest.li method, and populates the body of the
+// request with the given protoreflect.Message contents (see RawProtobufRequest)
+func ProtobufRequest(
+	ctx context.Context,
+	url *url.URL,
+	httpMethod string,
+	restLiMethod RestLiMethod,
+	contents proto.Message,
+) (*http.Request, error) {
+	data, err := proto.Marshal(contents)
+	if err != nil {
+		return nil, err
+	}
+	size := len(data)
+	ioReader := bytes.NewReader(data)
+	req, err := RawProtobufRequest(ctx, url, httpMethod, restLiMethod, ioReader)
+	if err != nil {
+		return nil, err
+	}
+	req.ContentLength = int64(size)
+	return req, nil
+}
+
+// RawProtobufRequest creates an http.Request with the given HTTP method and rest.li method, and populates the body of the
+// request with the given reader
+func RawProtobufRequest(ctx context.Context, url *url.URL, httpMethod string, restLiMethod RestLiMethod, contents io.Reader) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, httpMethod, url.String(), contents)
+	if err != nil {
+		return nil, err
+	}
+
+	SetRestLiHeaders(req, restLiMethod)
+	SetProtobufAcceptHeader(req)
+	SetProtobufContentTypeHeader(req)
 
 	return req, nil
 }
@@ -190,7 +242,7 @@ func (c *RestLiClient) DoAndDecode(req *http.Request, v restlicodec.Unmarshaler)
 	})
 }
 
-// DoAndDecode calls Do and drops the response's body. The response body will always be read to EOF and closed, to
+// DoAndIgnore calls Do and drops the response's body. The response body will always be read to EOF and closed, to
 // ensure the connection can be reused.
 func (c *RestLiClient) DoAndIgnore(req *http.Request) (*http.Response, error) {
 	return c.doAndConsumeBody(req, func([]byte) error {
